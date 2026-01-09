@@ -2241,7 +2241,46 @@ void Fortran::lower::mapSymbolAttributes(
           return;
         }
       }
-      // TODO: derived type length parameters.
+
+      /* ##########################################################################
+       */
+      // If we have a Type Spec...
+      if (const Fortran::semantics::DeclTypeSpec *declTypeSpec =
+              sym.GetType()) {
+        // And if it is a Derived Type...
+        if (const Fortran::semantics::DerivedTypeSpec *derivedTypeSpec =
+                declTypeSpec->AsDerived()) {
+          const Fortran::semantics::Symbol &typeSymbol =
+              derivedTypeSpec->typeSymbol();
+          const auto &details =
+              typeSymbol.get<Fortran::semantics::DerivedTypeDetails>();
+          // And if we have parameters to loop over...
+          for (const Fortran::semantics::SymbolRef &paramRef :
+               details.paramNameOrder()) {
+            const auto &paramDetails =
+                paramRef->get<Fortran::semantics::TypeParamDetails>();
+            // And if a parameter is a LEN type parameter...
+            if (paramDetails.attr() == Fortran::common::TypeParamAttr::Len) {
+              // Then grab the actual parameter value for this instance
+              if (const Fortran::semantics::ParamValue *paramValue =
+                      derivedTypeSpec->FindParameter(paramRef->name())) {
+                // Get the explicit parameter expression...
+                if (const Fortran::semantics::MaybeIntExpr &expr =
+                        paramValue->GetExplicit()) {
+                  // Lower the parameter expression...
+                  mlir::Value paramVal = genScalarValue(
+                      converter, loc, Fortran::lower::SomeExpr{*expr}, symMap,
+                      stmtCtx);
+                  // Ahh, push it (back). Push it real good.
+                  explicitParams.push_back(paramVal);
+                }
+              }
+            }
+          }
+        }
+      }
+      /* ##########################################################################
+       */
       if (!isAssumedRank) {
         lowerExplicitLowerBounds(converter, loc, ba, lbounds, symMap, stmtCtx);
         lowerExplicitExtents(converter, loc, ba, lbounds, explicitExtents,

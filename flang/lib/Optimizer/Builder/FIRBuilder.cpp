@@ -815,6 +815,26 @@ mlir::Value fir::FirOpBuilder::createBox(mlir::Location loc,
                                     emptyRange,
                                     isPolymorphic ? p.getSourceBox() : tdesc);
       },
+      /* #################################################################### */
+      [&](const fir::BoxValue &box) -> mlir::Value {
+        // If we have explicit parameters...
+        if (!box.getExplicitParameters().empty()) {
+          // ...pass the explicit parameters as-is
+          mlir::Value shape = box.getExplicitExtents().empty()
+                                  ? mlir::Value{}
+                                  : createShape(loc, exv);
+          mlir::Value emptySlice;
+          return fir::EmboxOp::create(*this, loc, boxTy, itemAddr, shape,
+                                      emptySlice, box.getExplicitParameters(),
+                                      tdesc);
+        }
+        // Default case; a BoxValue with no explicit parameters
+        mlir::Value empty;
+        mlir::ValueRange emptyRange;
+        return fir::EmboxOp::create(*this, loc, boxTy, itemAddr, empty, empty,
+                                    emptyRange, tdesc);
+      },
+      /* #################################################################### */
       [&](const auto &) -> mlir::Value {
         mlir::Value empty;
         mlir::ValueRange emptyRange;
@@ -1152,9 +1172,29 @@ static llvm::SmallVector<mlir::Value> getFromBox(mlir::Location loc,
   if (auto boxTy = mlir::dyn_cast<fir::BaseBoxType>(valTy)) {
     auto eleTy = fir::unwrapAllRefAndSeqType(boxTy.getEleTy());
     if (auto recTy = mlir::dyn_cast<fir::RecordType>(eleTy)) {
+      /* ################################################################## */
+      // If we have LEN parameters....
       if (recTy.getNumLenParams() > 0) {
-        // Walk each type parameter in the record and get the value.
-        TODO(loc, "generate code to get LEN type parameters");
+        llvm::SmallVector<mlir::Value> params;
+
+        // Iterate over all LEN parameters...
+        for (auto [paramName, paramTy] : recTy.getLenParamList()) {
+          // For every LEN param, get the index
+          mlir::Value paramIndex = fir::LenParamIndexOp::create(
+              builder, loc, paramName, boxTy.getEleTy(), mlir::ValueRange{});
+
+          // Grab the address (aka &len[paramIndex]) from the addendum
+          mlir::Value paramAddr = fir::CoordinateOp::create(
+              builder, loc, builder.getRefType(paramTy), boxVal,
+              mlir::ValueRange{paramIndex});
+
+          // Grab the value (aka *paramAddr) from the addendum
+          mlir::Value paramValue = fir::LoadOp::create(builder, loc, paramAddr);
+          params.push_back(paramValue);
+        }
+
+        return params;
+        /* ################################################################## */
       }
     } else if (auto charTy = mlir::dyn_cast<fir::CharacterType>(eleTy)) {
       if (charTy.hasDynamicLen()) {
