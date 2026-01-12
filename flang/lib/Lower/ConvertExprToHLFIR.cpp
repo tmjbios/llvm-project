@@ -33,7 +33,10 @@
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
 #include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/Debug.h"
 #include <optional>
+
+#define DEBUG_TYPE "flang-lower-expr-hlfir"
 
 namespace {
 
@@ -776,10 +779,25 @@ private:
     // shape).
     const Fortran::semantics::Symbol &componentSym = component.GetLastSymbol();
     partInfo.componentName = converter.getRecordTypeFieldName(componentSym);
-    auto recordType =
-        mlir::cast<fir::RecordType>(hlfir::getFortranElementType(baseType));
-    if (recordType.isDependentType())
-      TODO(getLoc(), "Designate derived type with length parameters in HLFIR");
+    auto recordType = mlir::cast<fir::RecordType>(hlfir::getFortranElementType(baseType));
+
+    /* ########################################################################## */
+    /* For dependent (parameterized) record types, we need to get the
+     * instantiated type that has the actual length parameter values substituted.
+     */
+    if (recordType.isDependentType()) {
+      LLVM_DEBUG(llvm::dbgs() << "TEDJ: Handling dependent type component access\n");
+      LLVM_DEBUG(llvm::dbgs() << "TEDJ: Base type params count: " 
+                 << partInfo.typeParams.size() << "\n");
+      /* The record type with length parameters needs to be resolved using
+       * the actual type parameter values from the base entity.
+       * For now, we can proceed with the dependent type - the field type
+       * lookup should still work.
+       */
+    }
+    /* ########################################################################## */
+
+
     mlir::Type fieldType = recordType.getType(partInfo.componentName);
     assert(fieldType && "component name is not known");
     mlir::Type fieldBaseType =
@@ -788,8 +806,20 @@ private:
 
     mlir::Type fieldEleType = hlfir::getFortranElementType(fieldBaseType);
     if (fir::isRecordWithTypeParameters(fieldEleType))
-      TODO(loc,
-           "lower a component that is a parameterized derived type to HLFIR");
+      TODO(loc, "lower a component that is a parameterized derived type to HLFIR");
+
+    /* ########################################################################## */
+    /* Clear the type params from the base PDT - they were used for computing
+     * the component shape but should not be passed to hlfir.designate unless
+     * the component itself has type parameters (like CHARACTER).
+     */
+    if (!mlir::isa<fir::CharacterType>(fieldEleType) &&
+        !fir::isRecordWithTypeParameters(fieldEleType)) {
+      LLVM_DEBUG(llvm::dbgs() << "TEDJ: Clearing type params - component type doesn't need them\n");
+      partInfo.typeParams.clear();
+    }
+    /* ########################################################################## */
+
     if (auto charTy = mlir::dyn_cast<fir::CharacterType>(fieldEleType)) {
       mlir::Location loc = getLoc();
       mlir::Type idxTy = builder.getIndexType();

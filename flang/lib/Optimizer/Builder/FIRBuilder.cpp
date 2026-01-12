@@ -34,6 +34,8 @@
 #include "llvm/Support/MD5.h"
 #include <optional>
 
+#define DEBUG_TYPE "flang-fir-builder"
+
 static llvm::cl::opt<std::size_t>
     nameLengthHashSize("length-to-hash-string-literal",
                        llvm::cl::desc("string literals that exceed this length"
@@ -1175,24 +1177,26 @@ static llvm::SmallVector<mlir::Value> getFromBox(mlir::Location loc,
       /* ################################################################## */
       // If we have LEN parameters....
       if (recTy.getNumLenParams() > 0) {
+        LLVM_DEBUG(llvm::dbgs() << "TEDJ FIRBuilder:1180: Extracting " << recTy.getNumLenParams() << " LEN parameters from box for type '" << recTy.getName() << "'\n"); // TEDJ
         llvm::SmallVector<mlir::Value> params;
 
         // Iterate over all LEN parameters...
         for (auto [paramName, paramTy] : recTy.getLenParamList()) {
+          LLVM_DEBUG(llvm::dbgs() << "TEDJ FIRBuilder:1185: Processing parameter '" << paramName << "' of type " << paramTy << "\n"); // TEDJ
+
           // For every LEN param, get the index
-          mlir::Value paramIndex = fir::LenParamIndexOp::create(
-              builder, loc, paramName, boxTy.getEleTy(), mlir::ValueRange{});
+          mlir::Value paramIndex = fir::LenParamIndexOp::create( builder, loc, paramName, boxTy.getEleTy(), mlir::ValueRange{});
 
           // Grab the address (aka &len[paramIndex]) from the addendum
-          mlir::Value paramAddr = fir::CoordinateOp::create(
-              builder, loc, builder.getRefType(paramTy), boxVal,
-              mlir::ValueRange{paramIndex});
+          mlir::Value paramAddr = fir::CoordinateOp::create( builder, loc, builder.getRefType(paramTy), boxVal, mlir::ValueRange{paramIndex});
 
           // Grab the value (aka *paramAddr) from the addendum
           mlir::Value paramValue = fir::LoadOp::create(builder, loc, paramAddr);
+          LLVM_DEBUG(llvm::dbgs() << "TEDJ FIRBuilder:1195: Loaded parameter value: " << paramValue << "\n"); // TEDJ
+
           params.push_back(paramValue);
         }
-
+        LLVM_DEBUG(llvm::dbgs() << "TEDJ FIRBuilder:1199: Successfully extracted " << params.size() << " parameter values\n"); // TEDJ
         return params;
         /* ################################################################## */
       }
@@ -1480,7 +1484,8 @@ static void genComponentByComponentAssignment(fir::FirOpBuilder &builder,
        llvm::zip(lhsType.getTypeList(), rhsType.getTypeList())) {
     auto &[lFieldName, lFieldTy] = lhsPair;
     auto &[rFieldName, rFieldTy] = rhsPair;
-    assert(!fir::hasDynamicSize(lFieldTy) && !fir::hasDynamicSize(rFieldTy));
+    assert(!fir::hasDynamicSize(lFieldTy) && "lhs field has dynamic size");
+    assert(!fir::hasDynamicSize(rFieldTy) && "rhs field has dynamic size");
     mlir::Value rField =
         fir::FieldIndexOp::create(builder, loc, fieldIndexType, rFieldName,
                                   rhsType, fir::getTypeParams(rhs));

@@ -25,6 +25,8 @@
 #include <mlir/Dialect/OpenMP/OpenMPDialect.h>
 #include <optional>
 
+#define DEBUG_TYPE "flang-hlfir-tools"
+
 // Return explicit extents. If the base is a fir.box, this won't read it to
 // return the extents and will instead return an empty vector.
 llvm::SmallVector<mlir::Value>
@@ -735,7 +737,49 @@ void hlfir::genLengthParameters(mlir::Location loc, fir::FirOpBuilder &builder,
     result.push_back(genCharacterVariableLength(loc, builder, entity));
     return;
   }
-  TODO(loc, "inquire PDTs length parameters in HLFIR");
+  /* ########################################################################## */
+  /* For PDT variables, extract the length parameters from the type descriptor */
+    if (entity.isDerivedWithLengthParameters()) {
+    LLVM_DEBUG(llvm::dbgs() << "TEDJ: Extracting length parameters for entity\n");
+    
+    /* The length parameters should be available from the hlfir.declare op
+     * that declared this entity.
+     */
+    mlir::Value base = entity.getBase();
+    
+    /* Walk up through the defining op chain to find the declare */
+    if (auto defOp = base.getDefiningOp()) {
+      if (auto declareOp = mlir::dyn_cast<hlfir::DeclareOp>(defOp)) {
+        for (mlir::Value typeParam : declareOp.getTypeparams()) {
+          LLVM_DEBUG(llvm::dbgs() << "TEDJ: Got type param from declare: "
+                     << typeParam << "\n");
+          result.push_back(typeParam);
+        }
+        return;
+      }
+    }
+    
+    /* If the base is a block argument or the declare wasn't found directly,
+     * try looking at the original base from the entity.
+     */
+    mlir::Value firBase = entity.getFirBase();
+    if (firBase != base) {
+      if (auto defOp = firBase.getDefiningOp()) {
+        if (auto declareOp = mlir::dyn_cast<hlfir::DeclareOp>(defOp)) {
+          for (mlir::Value typeParam : declareOp.getTypeparams()) {
+            LLVM_DEBUG(llvm::dbgs() << "TEDJ: Got type param from fir base declare: "
+                       << typeParam << "\n");
+            result.push_back(typeParam);
+          }
+          return;
+        }
+      }
+    }
+
+    TODO(loc, "extract PDT length parameters - declare op not found");
+  }
+  /* ########################################################################## */
+  //TODO(loc, "inquire PDTs length parameters in HLFIR");
 }
 
 mlir::Value hlfir::genCharLength(mlir::Location loc, fir::FirOpBuilder &builder,

@@ -479,17 +479,22 @@ struct TypeBuilderImpl {
     }
 
     mlir::Location loc = converter.genLocation(typeSymbol.name());
-    // (2) The LEN type parameters.
-    for (const auto &param :
-         Fortran::semantics::OrderParameterDeclarations(typeSymbol))
-      if (param->get<Fortran::semantics::TypeParamDetails>().attr() ==
-          Fortran::common::TypeParamAttr::Len) {
-        TODO(loc, "parameterized derived types");
-        // TODO: emplace in ps. Beware that param is the symbol in the type
-        // declaration, not instantiation: its kind may not be a constant.
-        // The instantiated symbol in tySpec.scope should be used instead.
-        ps.emplace_back(param->name().ToString(), genSymbolType(*param));
+    /* ########################################################################## */
+    for (const auto &param : Fortran::semantics::OrderParameterDeclarations(typeSymbol))
+      if (param->get<Fortran::semantics::TypeParamDetails>().attr() == Fortran::common::TypeParamAttr::Len) {
+        /* Get the instantiated parameter symbol from tySpec.scope rather than
+         * using the declaration parameter, since the declaration's kind may not
+         * be a constant.
+         */
+        if (const Fortran::semantics::Scope *scope = tySpec.GetScope()) {
+          auto paramIt = scope->find(param->name());
+          if (paramIt != scope->end()) {
+            const Fortran::semantics::Symbol &instantiatedParam = paramIt->second.get();
+            ps.emplace_back(param->name().ToString(), genSymbolType(instantiatedParam));
+          }
+        }
       }
+    /* ########################################################################## */
 
     rec.finalize(ps, cs);
 

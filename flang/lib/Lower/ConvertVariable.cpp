@@ -1875,7 +1875,8 @@ static void genDeclareSymbol(Fortran::lower::AbstractConverter &converter,
                              mlir::Value base, mlir::Value len = {},
                              llvm::ArrayRef<mlir::Value> shape = {},
                              llvm::ArrayRef<mlir::Value> lbounds = {},
-                             bool force = false) {
+                             bool force = false,
+                             Fortran::lower::StatementContext *stmtCtx = nullptr) {
   // In HLFIR, procedure dummy symbols are not added with an hlfir.declare
   // because they are "values", and hlfir.declare is intended for variables. It
   // would add too much complexity to hlfir.declare to support this case, and
@@ -1900,6 +1901,54 @@ static void genDeclareSymbol(Fortran::lower::AbstractConverter &converter,
     llvm::SmallVector<mlir::Value> lenParams;
     if (len)
       lenParams.emplace_back(len);
+
+    /* ################################################################ */
+    /* Extract PDT length parameters if this is a parameterized derived type */
+    // If we have a Type Specification...
+    if (const Fortran::semantics::DeclTypeSpec *declTypeSpec = sym.GetType()) {
+
+      // ...and if it is a Derived Type Spec...
+      if (const Fortran::semantics::DerivedTypeSpec *derivedTypeSpec = declTypeSpec->AsDerived()) {
+
+        // Grab the symbol and the details
+        const Fortran::semantics::Symbol &typeSymbol = derivedTypeSpec->typeSymbol();
+        const auto &details = typeSymbol.get<Fortran::semantics::DerivedTypeDetails>();
+
+        // Loop over parameters in declaration order
+        for (const Fortran::semantics::SymbolRef &paramRef : details.paramNameOrder()) {
+
+          // Get this parameter's specific details
+          const auto &paramDetails = paramRef->get<Fortran::semantics::TypeParamDetails>();
+
+          // Check if its a LEN; we only process LEN type parameters
+          if (paramDetails.attr() == Fortran::common::TypeParamAttr::Len) {
+
+            // If we have a value from the instantiation...
+            if (const Fortran::semantics::ParamValue *paramValue = derivedTypeSpec->FindParameter(paramRef->name())) {
+
+              // If we have an explicit int expr...
+              if (const Fortran::semantics::MaybeIntExpr &expr = paramValue->GetExplicit()) {
+
+                // Lower the parameter expression to an mlir::Value
+                Fortran::lower::StatementContext localStmtCtx;
+                mlir::Value paramVal = genScalarValue( converter, loc, Fortran::lower::SomeExpr{*expr}, symMap, stmtCtx ? *stmtCtx : localStmtCtx);
+                lenParams.push_back(paramVal);
+              } else { LLVM_DEBUG(llvm::dbgs() << "ConvertVariable:" << __LINE__ << ": GetExplicit() returned nullopt\n"); }
+            } else { LLVM_DEBUG(llvm::dbgs() << "ConvertVariable:" << __LINE__ << ": FindParameter returned nullptr\n"); }
+          } else { LLVM_DEBUG(llvm::dbgs() << "ConvertVariable:" << __LINE__ << ": Not a LEN type parameter\n"); }
+        }
+        // Finished the foreach paramRef; if we pushed any lenParams, dump the final info here...
+        if (lenParams.size() > (len ? 1u : 0u)) {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "ConvertVariable:" << __LINE__
+                     << ": Total of " << lenParams.size()
+                     << " length parameters for variable\n");
+        }
+      }
+    }
+    /* ################################################################ */
+
+
     auto name = converter.mangleName(sym);
     fir::FortranVariableFlagsEnum extraFlags = {};
     if (isCapturedInInternalProcedure(converter, sym))
@@ -2242,34 +2291,32 @@ void Fortran::lower::mapSymbolAttributes(
         }
       }
 
-      /* ##########################################################################
-       */
-      // If we have a Type Spec...
+      /* ############################################################## */
+      // We are in Dummy Arg handling here. If we have a Type Spec...
       if (const Fortran::semantics::DeclTypeSpec *declTypeSpec =
               sym.GetType()) {
         // And if it is a Derived Type...
-        if (const Fortran::semantics::DerivedTypeSpec *derivedTypeSpec =
-                declTypeSpec->AsDerived()) {
-          const Fortran::semantics::Symbol &typeSymbol =
-              derivedTypeSpec->typeSymbol();
-          const auto &details =
-              typeSymbol.get<Fortran::semantics::DerivedTypeDetails>();
-          // And if we have parameters to loop over...
+        if (const Fortran::semantics::DerivedTypeSpec *derivedTypeSpec = declTypeSpec->AsDerived()) {
+          // Get the information on what we have...
+          const Fortran::semantics::Symbol &typeSymbol = derivedTypeSpec->typeSymbol();
+          const auto &details = typeSymbol.get<Fortran::semantics::DerivedTypeDetails>();
+          // For every parameter we have, we loop over them...
           for (const Fortran::semantics::SymbolRef &paramRef :
                details.paramNameOrder()) {
-            const auto &paramDetails =
-                paramRef->get<Fortran::semantics::TypeParamDetails>();
+            const auto &paramDetails = paramRef->get<Fortran::semantics::TypeParamDetails>();
             // And if a parameter is a LEN type parameter...
             if (paramDetails.attr() == Fortran::common::TypeParamAttr::Len) {
               // Then grab the actual parameter value for this instance
               if (const Fortran::semantics::ParamValue *paramValue =
                       derivedTypeSpec->FindParameter(paramRef->name())) {
                 // Get the explicit parameter expression...
-                if (const Fortran::semantics::MaybeIntExpr &expr =
-                        paramValue->GetExplicit()) {
+                if (const Fortran::semantics::MaybeIntExpr &expr = paramValue->GetExplicit()) {
                   // Lower the parameter expression...
                   mlir::Value paramVal = genScalarValue(
-                      converter, loc, Fortran::lower::SomeExpr{*expr}, symMap,
+                      converter,
+                      loc,
+                      Fortran::lower::SomeExpr{*expr},
+                      symMap,
                       stmtCtx);
                   // Ahh, push it (back). Push it real good.
                   explicitParams.push_back(paramVal);
@@ -2279,8 +2326,7 @@ void Fortran::lower::mapSymbolAttributes(
           }
         }
       }
-      /* ##########################################################################
-       */
+      /* ############################################################## */
       if (!isAssumedRank) {
         lowerExplicitLowerBounds(converter, loc, ba, lbounds, symMap, stmtCtx);
         lowerExplicitExtents(converter, loc, ba, lbounds, explicitExtents,
